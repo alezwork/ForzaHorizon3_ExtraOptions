@@ -55,6 +55,10 @@ static int apply_save(unsigned char *base) {
 }
 
 void azimuth_apply_save_compatibility(int disable_checksums) {
+    azimuth_apply_title_save_compatibility(disable_checksums, 0x1a96545bu);
+}
+
+void azimuth_apply_title_save_compatibility(int disable_checksums, unsigned title_id) {
     if (!disable_checksums) {
         log_append("AZIMUTH: native save checksum and file-size verification "
                    "enabled.\r\n");
@@ -64,7 +68,8 @@ void azimuth_apply_save_compatibility(int disable_checksums) {
     if (result > 0) {
         log_append("AZIMUTH: save checksum and file-size comparisons disabled; "
                    "marker format and normal save writing retained.\r\n");
-        azimuth_repair_missing_markers((unsigned char *)GetModuleHandleW(NULL));
+        azimuth_repair_title_markers((unsigned char *)GetModuleHandleW(NULL), title_id,
+                                     log_append);
     } else if (result < 0) {
         log_append("AZIMUTH: save checksum override could not be applied.\r\n");
     } else {

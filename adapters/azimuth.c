@@ -5,6 +5,7 @@
 #include "settings.h"
 #include "sha256.h"
 #include "support.h"
+#include "features/fh3.h"
 #ifdef FH2_ENABLE_FM5
 #include "features/fm5.h"
 #endif
@@ -149,7 +150,7 @@ static unsigned package_title(const void *package) {
 }
 
 static int supported_title(unsigned title) {
-    if (title == FH2_TITLE_ID) return 1;
+    if (title == FH2_TITLE_ID || title == FH3_TITLE_ID) return 1;
 #ifdef FH2_ENABLE_FM5
     if (title == FM5_TITLE_ID) return 1;
 #endif
@@ -223,7 +224,7 @@ static void *on_map_game(void *output, const void *folder, const void *package, 
 #ifdef FH2_ENABLE_FM5
         status_set("INACTIVE: the loaded title is neither FH2 (1A96545B) nor FM5 (7B35D917).");
 #else
-        status_set("INACTIVE: this release supports only FH2 (1A96545B). No game or save patches applied.");
+        status_set("INACTIVE: this release supports only FH2 (1A96545B) and FH3 (4CE1DFAB). No game or save patches applied.");
 #endif
     } else if (!resolve_game_path(package)) {
         refuse("REFUSED: cannot resolve the loaded executable path. No game patches applied.");
@@ -241,7 +242,14 @@ static void *on_map_game(void *output, const void *folder, const void *package, 
                 notify_refusal();
         } else
 #endif
-        if (!mapped ||
+        if (title == FH3_TITLE_ID) {
+            /* Never enter FH2's runtime, settings, save adapter or DLL loader.
+               FH3 owns its verification, INI and diagnostic log. */
+            if (fh3_initialize(mapped ? game : NULL, game_path, mod_directory))
+                log_append("AZIMUTH: initialized for FH3 (4CE1DFAB); native game loader and TLS retained.\r\n");
+            else
+                notify_refusal();
+        } else if (!mapped ||
             !memory_read(game, &dos, sizeof(dos)) || dos.e_magic != IMAGE_DOS_SIGNATURE ||
             dos.e_lfanew < 64 || dos.e_lfanew > 4096 ||
             !memory_read(game + dos.e_lfanew, &nt, sizeof(nt)) || nt.Signature != IMAGE_NT_SIGNATURE ||

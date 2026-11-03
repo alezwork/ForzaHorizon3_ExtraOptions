@@ -1,0 +1,6 @@
+*.xrefs
+__pycache__/
+# build output and release packages (published as GitHub release assets)
+out/
+# local reverse-engineering scratch scripts
+tools/fh3_port/research/

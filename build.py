@@ -169,7 +169,8 @@ def version_resource(filename, fm5=False):
                "ProductVersion": version, "LegalCopyright": "Arthur (RokkuDayo)",
                "CompanyName": "Arthur (RokkuDayo)",
                "Comments": ("Unofficial in-process game mod. FH2: 1A96545B. FM5: 7B35D917 (Azimuth only)."
-                            if fm5 else "Unofficial in-process game mod. Forza Horizon 2 only: 1A96545B.")}
+                            if fm5 else "Unofficial in-process game mod. Forza Horizon 2: 1A96545B. "
+                            "Forza Horizon 3: 4CE1DFAB (Azimuth only).")}
     entries = b"".join(padded(block(key, wide(value), text=True)) for key, value in strings.items())
     string_info = block("StringFileInfo", children=block("040904b0", children=entries))
     variable_info = block("VarFileInfo", children=block("Translation", struct.pack("<HH", 0x409, 1200)))
@@ -202,7 +203,9 @@ def project_dependencies(path, seen=None):
         included = path.parent / name
         if not included.is_file():
             included = SOURCE / name
-        project_dependencies(included.resolve(), seen)
+        # Optional profiles (FM5) are referenced under #ifdef but not shipped.
+        if included.is_file():
+            project_dependencies(included.resolve(), seen)
     return seen
 
 
@@ -233,6 +236,7 @@ def build(compiler, output, directory, options):
             "adapters/azimuth_host.c",
             "adapters/azimuth_save.c",
             "adapters/azimuth_markers.c",
+            "features/fh3.c",
         ]
         if options.azimuth
         else ["adapters/mezcal.c"]

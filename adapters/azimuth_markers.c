@@ -298,6 +298,7 @@ static void repair_title(const wchar_t *directory, unsigned title_id,
 #ifdef FH2_ENABLE_FM5
     if (title_id == 0x7b35d917u) relative = L"data\\titles\\7B35D917\\saves";
 #endif
+    if (title_id == 0x4ce1dfabu) relative = L"data\\titles\\4CE1DFAB\\saves";
     if (!relative) return;
     wchar_t *root = HeapAlloc(GetProcessHeap(), 0, PATH_CAPACITY * sizeof(wchar_t));
     if (!root) return;

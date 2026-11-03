@@ -16,6 +16,15 @@ void log_set_directory(const wchar_t *directory) {
     }
 }
 
+void log_set_file(const wchar_t *path) {
+    size_t length = 0;
+    while (path[length] && length < PATH_CAPACITY - 1) {
+        runtime_log_path[length] = path[length];
+        ++length;
+    }
+    runtime_log_path[path[length] ? 0 : length] = 0;
+}
+
 void log_append(const char *message) {
     if (!runtime_log_path[0]) {
         return;
