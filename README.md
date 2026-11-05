@@ -4,6 +4,11 @@ An unofficial port of [Forza Horizon 2 Extra Options](https://github.com/RokkuDa
 by Arthur (RokkuDayo) to the **Xbox One version of Forza Horizon 3**, running on the Azimuth
 translation layer.
 
+![Before and after: the stock game swaps the real rim for a flat blurred one; with the mod the 3D rim keeps spinning](docs/rims_before_after.gif)
+
+*`BlurRimThreshold`: the stock game swaps the spinning 3D rim for a flat blurred mesh (top);
+with the mod the real rim keeps spinning (bottom).*
+
 The same `winmm.dll` serves both games. When Azimuth loads Forza Horizon 2, the original
 FH2 Extra Options 0.4.4 runs unchanged. When it loads Forza Horizon 3, a separate FH3
 profile takes over with its own settings file and log. FH2 code is never entered for FH3.
