@@ -1,4 +1,7 @@
 #include "fh3.h"
+#include "fh3_groove.h"
+#include "fh3_lights.h"
+#include "fh3_minimap.h"
 #include "logging.h"
 #include "sha256.h"
 #include "support.h"
@@ -18,7 +21,8 @@ static const unsigned char fh3_file_sha256[32] = {
 
 typedef enum {
     FH3_GROUP_INTRO, FH3_GROUP_VIP, FH3_GROUP_TREASURE_MAP, FH3_GROUP_DLC,
-    FH3_GROUP_SUN_SHADOWS, FH3_GROUP_BLUR_RIMS
+    FH3_GROUP_SUN_SHADOWS, FH3_GROUP_BLUR_RIMS, FH3_GROUP_HEADLIGHTS, FH3_GROUP_GROOVE,
+    FH3_GROUP_MINIMAP
 } Fh3PatchGroup;
 
 typedef struct {
@@ -103,11 +107,66 @@ static Fh3Patch fh3_patches[] = {
      {0xcc,0xcc,0xcc,0xcc}, {0x00,0x00,0x00,0x00}},
     {0x1e37b6d, 8, FH3_GROUP_BLUR_RIMS, "blur_rim_threshold_load",
      {0xc5,0xfa,0x10,0xa0,0x20,0x2d,0x00,0x00}, {0xc5,0xfa,0x10,0x25,0x17,0x01,0x00,0x00}},
+    /* ForzaCar vtable slot 16: both pointers are filled at startup (the
+       relocated native update and the DLL's headlight callback). */
+    {FH3_CAR_UPDATE_SLOT_RVA, 8, FH3_GROUP_HEADLIGHTS, "headlight_toggle_car_update",
+     {0}, {0}},
+    /* Xbox Music radio: jmp [rip] thunks in int3 padding (address filled at
+       startup), the nine service wrapper calls to the web service dispatcher
+       and SongStream's MFCreateSourceReaderFromURL call routed through them. */
+    {FH3_GROOVE_DISPATCHER_THUNK_RVA, 6, FH3_GROUP_GROOVE, "groove_dispatcher_thunk",
+     {0xcc,0xcc,0xcc,0xcc,0xcc,0xcc}, {0xff,0x25,0x00,0x00,0x00,0x00}},
+    {FH3_GROOVE_DISPATCHER_THUNK_RVA + 6, 8, FH3_GROUP_GROOVE, "groove_dispatcher_target",
+     {0xcc,0xcc,0xcc,0xcc,0xcc,0xcc,0xcc,0xcc}, {0}},
+    {FH3_GROOVE_MF_THUNK_RVA, 6, FH3_GROUP_GROOVE, "groove_reader_thunk",
+     {0xcc,0xcc,0xcc,0xcc,0xcc,0xcc}, {0xff,0x25,0x00,0x00,0x00,0x00}},
+    {FH3_GROOVE_MF_THUNK_RVA + 6, 8, FH3_GROUP_GROOVE, "groove_reader_target",
+     {0xcc,0xcc,0xcc,0xcc,0xcc,0xcc,0xcc,0xcc}, {0}},
+    {0x27b84c8, 5, FH3_GROUP_GROOVE, "groove_continue_get_playlist_tracks",
+     {0xe8,0xf3,0xdb,0xfc,0xfe}, {0xe8,0xb3,0x80,0xf4,0xff}},
+    {0x27b8788, 5, FH3_GROUP_GROOVE, "groove_continue_get_playlist_tracks_shuffle",
+     {0xe8,0x33,0xd9,0xfc,0xfe}, {0xe8,0xf3,0x7d,0xf4,0xff}},
+    {0x27b8a43, 5, FH3_GROUP_GROOVE, "groove_continue_get_playlists",
+     {0xe8,0x78,0xd6,0xfc,0xfe}, {0xe8,0x38,0x7b,0xf4,0xff}},
+    {0x27b8d03, 5, FH3_GROUP_GROOVE, "groove_get_playlist_tracks",
+     {0xe8,0xb8,0xd3,0xfc,0xfe}, {0xe8,0x78,0x78,0xf4,0xff}},
+    {0x27b8fc8, 5, FH3_GROUP_GROOVE, "groove_get_playlist_tracks_shuffle",
+     {0xe8,0xf3,0xd0,0xfc,0xfe}, {0xe8,0xb3,0x75,0xf4,0xff}},
+    {0x27b9230, 5, FH3_GROUP_GROOVE, "groove_get_playlists",
+     {0xe8,0x8b,0xce,0xfc,0xfe}, {0xe8,0x4b,0x73,0xf4,0xff}},
+    {0x27b94f6, 5, FH3_GROUP_GROOVE, "groove_get_song_url",
+     {0xe8,0xc5,0xcb,0xfc,0xfe}, {0xe8,0x85,0x70,0xf4,0xff}},
+    {0x27b9760, 5, FH3_GROUP_GROOVE, "groove_get_user_permissions",
+     {0xe8,0x5b,0xc9,0xfc,0xfe}, {0xe8,0x1b,0x6e,0xf4,0xff}},
+    {0x27b99c0, 5, FH3_GROUP_GROOVE, "groove_pretrial_opt_in",
+     {0xe8,0xfb,0xc6,0xfc,0xfe}, {0xe8,0xbb,0x6b,0xf4,0xff}},
+    {0x1991dab, 5, FH3_GROUP_GROOVE, "groove_song_reader",
+     {0xe8,0xd6,0x09,0x02,0x00}, {0xe8,0xd0,0x9d,0xd7,0x00}},
+    /* CForza's per-frame XboxMusicPlayer update tail jumps, for the state log. */
+    {FH3_GROOVE_PLAYER_THUNK_RVA, 6, FH3_GROUP_GROOVE, "groove_player_thunk",
+     {0xcc,0xcc,0xcc,0xcc,0xcc,0xcc}, {0xff,0x25,0x00,0x00,0x00,0x00}},
+    {FH3_GROOVE_PLAYER_THUNK_RVA + 6, 8, FH3_GROUP_GROOVE, "groove_player_target",
+     {0xcc,0xcc,0xcc,0xcc,0xcc,0xcc,0xcc,0xcc}, {0}},
+    {0x1731b26, 5, FH3_GROUP_GROOVE, "groove_player_update_active",
+     {0xe9,0x85,0x5e,0x21,0x00}, {0xe9,0xe5,0xaa,0xed,0x00}},
+    {0x1731b39, 5, FH3_GROUP_GROOVE, "groove_player_update_inactive",
+     {0xe9,0x72,0x5e,0x21,0x00}, {0xe9,0xd2,0xaa,0xed,0x00}},
+    /* Minimap follows the camera (FH2 MinimapFollowsCamera): the tracking
+       controller's minimap update call goes through a thunk to the DLL. */
+    {FH3_MINIMAP_THUNK_RVA, 6, FH3_GROUP_MINIMAP, "minimap_camera_heading_thunk",
+     {0xcc,0xcc,0xcc,0xcc,0xcc,0xcc}, {0xff,0x25,0x00,0x00,0x00,0x00}},
+    {FH3_MINIMAP_THUNK_RVA + 6, 8, FH3_GROUP_MINIMAP, "minimap_camera_heading_target",
+     {0xcc,0xcc,0xcc,0xcc,0xcc,0xcc,0xcc,0xcc}, {0}},
+    {0x120b3d2, 5, FH3_GROUP_MINIMAP, "minimap_camera_heading_call",
+     {0xe8,0xe9,0x12,0x00,0x00}, {0xe8,0x89,0x7e,0x3f,0x01}},
 };
 
 typedef struct {
     int enabled, skip_intro, offline_vip, unlock_treasure_map, unlock_dlc,
-        smooth_sun_shadows, blur_rim_threshold, disable_azimuth_save_checksums;
+        smooth_sun_shadows, blur_rim_threshold, headlight_toggle, disable_azimuth_save_checksums,
+        local_music_radio, minimap_follows_camera;
+    Fh3LightsConfig lights;
+    Fh3GrooveConfig radio;
 } Fh3Options;
 
 static const char default_ini[] =
@@ -137,6 +196,29 @@ static const char default_ini[] =
     "; above 100 = never swap, the real 3D rim always spins.\r\n"
     "BlurRimThreshold=200\r\n"
     "\r\n"
+    "[HUD]\r\n"
+    "; When the minimap rotates, turn it with the camera instead of the car.\r\n"
+    "MinimapFollowsCamera=1\r\n"
+    "\r\n"
+    "[Vehicle]\r\n"
+    "; Toggle the headlights of any car with a button of the game's controller.\r\n"
+    "; The left stick is the game's horn by default: move the horn elsewhere in\r\n"
+    "; the game's controller settings.\r\n"
+    "HeadlightToggle=1\r\n"
+    "; Button mask: 64 = left stick, 128 = right stick.\r\n"
+    "HeadlightButton=64\r\n"
+    "\r\n"
+    "[Radio]\r\n"
+    "; Bring back the Groove radio station with your own music: put songs\r\n"
+    "; (mp3, m4a, aac, wma, wav, flac) in the music folder. Each subfolder\r\n"
+    "; becomes a playlist; \"Artist - Title.mp3\" names show artist and title.\r\n"
+    "; Turn the station on in Settings > Audio and pick a playlist there.\r\n"
+    "LocalMusicRadio=1\r\n"
+    "; Empty = the FH3_Music folder next to this INI.\r\n"
+    "MusicFolder=\r\n"
+    "; Log the station's requests and state to FH3_ExtraOptions.log.\r\n"
+    "GrooveLog=1\r\n"
+    "\r\n"
     "[Compatibility]\r\n"
     "; Bypass Azimuth's save size/hash rejection and rebuild missing commit markers.\r\n"
     "DisableAzimuthSaveChecksums=0\r\n";
@@ -157,6 +239,8 @@ static int read_flag(const wchar_t *section, const wchar_t *key, int fallback) {
     return GetPrivateProfileIntW(section, key, fallback, ini_path) != 0;
 }
 
+static const wchar_t *settings_directory;
+
 static void read_options(Fh3Options *options) {
     write_default_ini();
     options->enabled = read_flag(L"Global", L"Enabled", 1);
@@ -169,6 +253,25 @@ static void read_options(Fh3Options *options) {
         (int)GetPrivateProfileIntW(L"Graphics", L"BlurRimThreshold", 200, ini_path);
     if (options->blur_rim_threshold < 0) options->blur_rim_threshold = 0;
     if (options->blur_rim_threshold > 1000) options->blur_rim_threshold = 1000;
+    options->headlight_toggle = read_flag(L"Vehicle", L"HeadlightToggle", 1);
+    options->local_music_radio = read_flag(L"Radio", L"LocalMusicRadio", 1);
+    options->radio.log = read_flag(L"Radio", L"GrooveLog", 1);
+    GetPrivateProfileStringW(L"Radio", L"MusicFolder", L"", options->radio.folder,
+                             ARRAY_COUNT(options->radio.folder), ini_path);
+    size_t length = 0;
+    while (options->radio.folder[length]) ++length;
+    while (length && (options->radio.folder[length - 1] == '\\' || options->radio.folder[length - 1] == '/'))
+        options->radio.folder[--length] = 0;
+    if (!length) {
+        static wchar_t folder[PATH_CAPACITY];
+        if (path_join(folder, settings_directory, L"FH3_Music")) {
+            for (length = 0; folder[length] && length + 1 < ARRAY_COUNT(options->radio.folder); ++length)
+                options->radio.folder[length] = folder[length];
+            options->radio.folder[length] = 0;
+        }
+    }
+    options->minimap_follows_camera = read_flag(L"HUD", L"MinimapFollowsCamera", 1);
+    options->lights.button_mask = GetPrivateProfileIntW(L"Vehicle", L"HeadlightButton", 0x40, ini_path);
     options->disable_azimuth_save_checksums =
         read_flag(L"Compatibility", L"DisableAzimuthSaveChecksums", 0);
 }
@@ -179,6 +282,9 @@ static int group_enabled(Fh3PatchGroup group, const Fh3Options *options) {
          : group == FH3_GROUP_DLC     ? options->unlock_dlc
          : group == FH3_GROUP_SUN_SHADOWS ? options->smooth_sun_shadows
          : group == FH3_GROUP_BLUR_RIMS ? options->blur_rim_threshold != 50
+         : group == FH3_GROUP_HEADLIGHTS ? options->headlight_toggle
+         : group == FH3_GROUP_GROOVE ? options->local_music_radio
+         : group == FH3_GROUP_MINIMAP ? options->minimap_follows_camera
                                       : options->unlock_treasure_map;
 }
 
@@ -237,8 +343,45 @@ static void prepare_blur_rim_threshold(const Fh3Options *options) {
     }
 }
 
+static void prepare_headlights(unsigned char *game, const Fh3Options *options) {
+    uintptr_t native = (uintptr_t)(game + FH3_CAR_UPDATE_RVA), callback = fh3_lights_callback();
+    for (unsigned i = 0; i < ARRAY_COUNT(fh3_patches); ++i) {
+        if (fh3_patches[i].rva == FH3_CAR_UPDATE_SLOT_RVA) {
+            memory_copy(fh3_patches[i].original, &native, sizeof(native));
+            memory_copy(fh3_patches[i].patched, &callback, sizeof(callback));
+        }
+    }
+    if (options->headlight_toggle) fh3_lights_configure(game, &options->lights);
+}
+
+static void prepare_groove(unsigned char *game, const Fh3Options *options) {
+    uintptr_t dispatcher = fh3_groove_dispatcher_callback(), reader = fh3_groove_reader_callback(),
+              player = fh3_groove_player_callback();
+    for (unsigned i = 0; i < ARRAY_COUNT(fh3_patches); ++i) {
+        if (fh3_patches[i].rva == FH3_GROOVE_DISPATCHER_THUNK_RVA + 6)
+            memory_copy(fh3_patches[i].patched, &dispatcher, sizeof(dispatcher));
+        if (fh3_patches[i].rva == FH3_GROOVE_MF_THUNK_RVA + 6)
+            memory_copy(fh3_patches[i].patched, &reader, sizeof(reader));
+        if (fh3_patches[i].rva == FH3_GROOVE_PLAYER_THUNK_RVA + 6)
+            memory_copy(fh3_patches[i].patched, &player, sizeof(player));
+    }
+    if (options->local_music_radio) fh3_groove_configure(game, &options->radio);
+}
+
+static void prepare_minimap(unsigned char *game, const Fh3Options *options) {
+    uintptr_t callback = fh3_minimap_callback();
+    for (unsigned i = 0; i < ARRAY_COUNT(fh3_patches); ++i) {
+        if (fh3_patches[i].rva == FH3_MINIMAP_THUNK_RVA + 6)
+            memory_copy(fh3_patches[i].patched, &callback, sizeof(callback));
+    }
+    if (options->minimap_follows_camera) fh3_minimap_configure(game);
+}
+
 static int apply_patches(unsigned char *game, const Fh3Options *options) {
     prepare_blur_rim_threshold(options);
+    prepare_headlights(game, options);
+    prepare_groove(game, options);
+    prepare_minimap(game, options);
     /* Validate every requested site before writing any byte. Already patched
        bytes are accepted so a repeated initialization stays harmless. */
     for (unsigned i = 0; i < ARRAY_COUNT(fh3_patches); ++i) {
@@ -291,14 +434,21 @@ static void start_log(const Fh3Options *options) {
     log_append_value("UnlockDLC=", options->unlock_dlc);
     log_append_value("SmoothSunShadows=", options->smooth_sun_shadows);
     log_append_value("BlurRimThreshold=", options->blur_rim_threshold);
+    log_append_value("HeadlightToggle=", options->headlight_toggle);
+    log_append_value("LocalMusicRadio=", options->local_music_radio);
+    log_append_value("MinimapFollowsCamera=", options->minimap_follows_camera);
+    log_append_value("HeadlightButton=", (int)options->lights.button_mask);
     log_append_value("DisableAzimuthSaveChecksums=", options->disable_azimuth_save_checksums);
 }
 
 int fh3_initialize(unsigned char *game_image, const wchar_t *executable_path,
-                   const wchar_t *settings_directory) {
-    Fh3Options options = {1, 1, 1, 1, 1, 1, 200, 0};
-    if (!path_join(ini_path, settings_directory, FH3_INI_NAME) ||
-        !path_join(log_path, settings_directory, FH3_LOG_NAME)) {
+                   const wchar_t *settings_directory_path) {
+    /* Static: the radio folder makes it too large for the stack. Every field
+       is (re)read from the INI by read_options. */
+    static Fh3Options options;
+    settings_directory = settings_directory_path;
+    if (!path_join(ini_path, settings_directory_path, FH3_INI_NAME) ||
+        !path_join(log_path, settings_directory_path, FH3_LOG_NAME)) {
         status_set("REFUSED: cannot resolve the FH3 settings path. No patches applied.");
         return 0;
     }

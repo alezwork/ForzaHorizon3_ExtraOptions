@@ -9,21 +9,21 @@ helper DLL, or translation-layer source is required.
 
 ```text
 python build.py /absolute/path/to/zig.exe
-python build.py /absolute/path/to/zig.exe --azimuth
 ```
 
-The outputs are `../xg.dll` for Mezcal and `../azimuth-tls.dll` for Azimuth.
-`--output PATH` chooses another destination. `--build-dir PATH` keeps the
-intermediate files in that directory; otherwise they use a temporary directory.
-The script lists common modules explicitly and selects one layer adapter.
-Azimuth also includes its guarded host, livery and save compatibility modules.
-All modules compile with warnings treated as errors and x64 unwind tables.
+The output is `../winmm.dll`, the Azimuth proxy with the FH2 mod and the FH3
+profile. `--output PATH` chooses another destination. `--build-dir PATH` keeps
+the intermediate files in that directory; otherwise they go to `../.build`.
+The script lists every module explicitly, including the guarded Azimuth host
+and save compatibility modules and the FH3 files. The Mezcal adapter of the
+original project is not part of this repository. All modules compile with
+warnings treated as errors and x64 unwind tables.
 
 On Linux, use the portable Linux Zig distribution and the same commands with
 `zig` as the compiler filename. The target remains a Windows DLL. Cross-build
 support is retained; Linux/Wine execution has not been tested.
 
-The public exports are `Fh2TweaksStatus` on both adapters and the additional
+The public exports are `Fh2TweaksStatus` and the additional
 `azimuth_tls_index` / `azimuth_tls_attached` data exports on Azimuth. These names
 are retained for compatibility. Azimuth has a 336-byte zero TLS template aligned
 to 16 bytes and no TLS callbacks. The release binaries import Kernel32 only.
@@ -32,7 +32,7 @@ Autodrive loads User32 lazily on a native GPS update to read F2 and focus.
 Controller buttons and telemetry visibility are read from native game state;
 the cinematic transition calls the game's existing white-flash routine.
 
-Both adapters initialize synchronously in `DllMain`. Startup performs simple
+The adapter initializes synchronously in `DllMain`. Startup performs simple
 configuration I/O, hashing, mapped-image validation, and memory patching.
 Callback resource work and PNG decoding happen on normal game call paths.
 There is no worker thread or startup wait. Callback installation pins the DLL

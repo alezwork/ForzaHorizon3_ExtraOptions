@@ -6,9 +6,6 @@
 #include "sha256.h"
 #include "support.h"
 #include "features/fh3.h"
-#ifdef FH2_ENABLE_FM5
-#include "features/fm5.h"
-#endif
 
 #define FH2_TITLE_ID 0x1a96545bu
 
@@ -151,9 +148,6 @@ static unsigned package_title(const void *package) {
 
 static int supported_title(unsigned title) {
     if (title == FH2_TITLE_ID || title == FH3_TITLE_ID) return 1;
-#ifdef FH2_ENABLE_FM5
-    if (title == FM5_TITLE_ID) return 1;
-#endif
     return 0;
 }
 
@@ -221,11 +215,7 @@ static void *on_map_game(void *output, const void *folder, const void *package, 
     if (!restored) {
         refuse("REFUSED: could not restore Azimuth's game-loading call. No game patches applied.");
     } else if (!supported_title(title)) {
-#ifdef FH2_ENABLE_FM5
-        status_set("INACTIVE: the loaded title is neither FH2 (1A96545B) nor FM5 (7B35D917).");
-#else
         status_set("INACTIVE: this release supports only FH2 (1A96545B) and FH3 (4CE1DFAB). No game or save patches applied.");
-#endif
     } else if (!resolve_game_path(package)) {
         refuse("REFUSED: cannot resolve the loaded executable path. No game patches applied.");
     } else {
@@ -234,14 +224,6 @@ static void *on_map_game(void *output, const void *folder, const void *package, 
         IMAGE_NT_HEADERS64 nt;
         int mapped = memory_read_pointer(result, (void **)&context) &&
                      memory_read_pointer(context, (void **)&game);
-#ifdef FH2_ENABLE_FM5
-        if (title == FM5_TITLE_ID) {
-            /* Never enter FH2's runtime, settings, save adapter or DLL loader.
-               FM5 owns its verification, INI and diagnostic log. */
-            if (!fm5_initialize(title, mapped ? game : NULL, game_path, mod_directory))
-                notify_refusal();
-        } else
-#endif
         if (title == FH3_TITLE_ID) {
             /* Never enter FH2's runtime, settings, save adapter or DLL loader.
                FH3 owns its verification, INI and diagnostic log. */

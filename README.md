@@ -20,8 +20,11 @@ profile takes over with its own settings file and log. FH2 code is never entered
 | `[Content] OfflineVIP` | VIP status: VIP wheelspins, VIP rewards and the profile VIP flag | 5 | Yes |
 | `[Content] UnlockTreasureMap` | Treasure Map for the mainland, Blizzard Mountain and Hot Wheels | 5 | Not yet |
 | `[Content] UnlockDLC` | Every car pack, Car Pass car and both expansions | 1 | Not yet |
-| `[Graphics] SmoothSunShadows` | Smooth sun shadows: all four cascades refresh every frame | 6 | Not yet |
+| `[Graphics] SmoothSunShadows` | Smooth, real-time sun shadows: all four cascades refresh every frame | 6 | Yes |
 | `[Graphics] BlurRimThreshold` | Wheel speed at which the 3D rim is swapped for the flat blurred rim | 2 | Yes |
+| `[HUD] MinimapFollowsCamera` | A rotating minimap turns with the camera instead of the car (FH2 feature) | 3 | Yes |
+| `[Vehicle] HeadlightToggle` | Headlights on/off on every car with a controller button, left stick by default (FH2 feature) | 1 | Yes |
+| `[Radio] LocalMusicRadio` | Brings back the Groove (Xbox Music) radio station, playing your own music files | 18 | Partly |
 | `[Compatibility] DisableAzimuthSaveChecksums` | Same as FH2: bypass Azimuth's save size/hash rejection (off by default) | - | - |
 
 Notes:
@@ -34,17 +37,41 @@ Notes:
 - **SmoothSunShadows** costs GPU time. It renders four shadow cascades per frame instead of
   roughly one. FH3 adds a staggered mode that FH2 does not have, with the schedule
   `1,0,2,0,1,0,3,0,...`, so the far cascade updates only every 16th frame. This feature
-  disables that mode as well.
+  disables that mode as well. It is the FH3 version of FH2's real-time shadows option.
 - **BlurRimThreshold** is a percentage of the game's blur `MaxRPM` (350). `50` is the game
   default, about 15 mph. Any value above `100` (default `200`) never swaps, so the real 3D
   rim always spins. The stock swap is instant because `GeomBlendStart` equals
   `GeomBlendEnd` (0.5) in `GlobalCarAttributes.xml`, and no car shader reads
   `g_BlurRimGeomBlend`, so the game cannot cross-fade the two meshes. At very high speed a
   real rim can show the wagon-wheel effect; `BlurRimThreshold=90` swaps late instead.
+- **HeadlightToggle** works like FH2's vehicle lights: the player's car is the `ForzaCar` whose
+  driver is the local `CPlayer`, and the button is read from the game's own controller state
+  (any pad the game sees works). `HeadlightButton` is an XInput-style mask: `64` = left
+  stick, `128` = right stick. The left stick is the horn by default, so move the horn in the
+  game's controller settings first. Lights stay as you set them until you change car. Some
+  cars also light cockpit elements together with the headlights, as they do at night.
+- **MinimapFollowsCamera** only changes a minimap that rotates. It uses the camera of the
+  active view, so looking around with the orbit camera turns the map.
+- **LocalMusicRadio.** The Groove station talked to the Forza web service
+  `Forza.WebServices.XboxMusic`, which no longer exists. The mod answers those calls itself:
+  - the subscription check succeeds;
+  - playlists and songs come from the music folder: `FH3_Music` next to the INI, or the
+    `MusicFolder` setting. Every top-level subfolder is a playlist, plus "All music";
+  - every song plays straight from its file through Windows Media Foundation (mp3, m4a, aac,
+    wma, wav, flac);
+  - a file named `Artist - Title.mp3` shows its artist and title, otherwise the folder name
+    is shown as the artist.
+
+  Turn the station on in **Settings > Audio** and pick a playlist there. The game itself
+  unlocks the "Xbox Music" station during the story, with its Groove introduction popup;
+  after that it appears in the radio list. Songs added while the game runs are found after a
+  restart. `GrooveLog=1` writes the station's requests and state to the log. The settings
+  page, playlists and subscription are tested; playback is not yet.
 
 Everything else from FH2 Extra Options (garage from pause, autodrive, drift camera, FOV,
-vehicle lights, video menu, rims, mod loader and so on) is **not** ported to FH3. The original
-feature list is kept in [docs/FH2_README.md](docs/FH2_README.md).
+video menu, rims, mod loader and so on) is **not** ported to FH3. FH3 already lets you change
+car anywhere from the pause menu (My Cars, with car delivery). The original feature list is
+kept in [docs/FH2_README.md](docs/FH2_README.md).
 
 ## Requirements
 
@@ -60,11 +87,12 @@ Any other executable is refused and nothing is patched.
 1. Download `FH3_ExtraOptions_Azimuth.zip` from [Releases](../../releases).
 2. Close Azimuth.
 3. **Back up your saves:** `<Azimuth folder>\data\titles\4CE1DFAB\saves`.
-4. Extract `winmm.dll` and `FH3_ExtraOptions.ini` into the Azimuth folder, next to
-   `azimuth.exe`, replacing existing files.
-5. Start Forza Horizon 3 through Azimuth.
+4. Extract `winmm.dll`, `FH3_ExtraOptions.ini` and the `FH3_Music` folder into the Azimuth
+   folder, next to `azimuth.exe`, replacing existing files.
+5. Put your music into `FH3_Music`.
+6. Start Forza Horizon 3 through Azimuth.
 
-`FH3_ExtraOptions.log` appears next to the DLL. A successful start lists 23
+`FH3_ExtraOptions.log` appears next to the DLL. A successful start lists 45
 `FH3: patched ...` lines and `OK: requested FH3 tweaks applied in memory.`
 
 If you turn `UnlockDLC` off after using DLC cars, those cars may stay in or vanish from your
@@ -84,9 +112,14 @@ previous `winmm.dll`, or delete it if you use no other mods.
   FH3 code through shared strings, config-flag offsets, MSVC RTTI vtables (for example
   `ShadowMapRendererAnthem11`) and identical instruction shapes. The game database and shaders
   were inspected for the DLC and wheel features.
+- Hooks into the DLL use a vtable slot (headlights) or a call/jump redirected to a
+  `jmp [rip]` thunk written into unused `int3` padding (minimap, radio). The DLL pins itself
+  before any of them is written.
 
 The full patch table, with the reasoning for every site, lives in
-[features/fh3.c](features/fh3.c).
+[features/fh3.c](features/fh3.c). The hooked features have their own files:
+[fh3_lights.c](features/fh3_lights.c), [fh3_minimap.c](features/fh3_minimap.c) and
+[fh3_groove.c](features/fh3_groove.c).
 
 | Group | Sites (RVA) |
 |---|---|
@@ -96,20 +129,22 @@ The full patch table, with the reasoning for every site, lives in
 | DLC | `0x2d30565` (`IsPurchased=0` becomes `=1`) |
 | Sun shadows | `0x1b7d459`, `0x1b82711`, `0x1b82dcd` (FH2 equivalents); `0x1b80a50`, `0x1b80a58`, `0x1b7d4a6` (FH3 staggered mode) |
 | Blur rims | `0x1e37b6d` (threshold load), `0x1e37c8c` (threshold value in padding) |
+| Headlights | `ForzaCar` vtable slot 16 `0x42e06d0` (per-car update) |
+| Minimap | call `0x120b3d2` (tracking minimap update), thunk `0x2603260` |
+| Radio | 9 XboxMusic service calls `0x27b84c8`...`0x27b99c0`, song reader `0x1991dab`, player update jumps `0x1731b26`/`0x1731b39`; thunks `0x2700580`, `0x270bb80`, `0x260c610` |
 
 ## Building
 
-Requires Python 3.10+ and Zig 0.15.2, exactly as for FH2 (see [BUILD.md](BUILD.md)):
+Requires Python 3.10+ and Zig 0.15.2 (see [BUILD.md](BUILD.md)):
 
 ```text
-python build.py /path/to/zig.exe --azimuth
+python build.py /path/to/zig.exe
 ```
 
-The FH3 profile (`features/fh3.c`) is part of every Azimuth build. The Mezcal (`xg.dll`)
-build is FH2 only.
+The output is the Azimuth `winmm.dll` with both the FH2 mod and the FH3 profile.
 
-To re-check every FH3 patch site against your own copy of the executable (needs `pefile` and
-`capstone`):
+To re-check every FH3 patch site and every game structure the hooks rely on against your own
+copy of the executable (needs `pefile` and `capstone`):
 
 ```text
 set FH3_EXE=X:\path\to\Forza Horizon 3\Mount\forza_durango_release_final.exe
@@ -119,29 +154,34 @@ python tools/fh3_port/check_fh3_patches.py
 `tools/fh3_port/` also contains the small helpers used during the port:
 
 - `xbox_image.py` - PE and xref helpers;
-- `rtti.py` - MSVC RTTI vtable lookup;
-- `dxbc_dis.py` - DXBC shader disassembly through the system `d3dcompiler_47.dll`.
+- `rtti.py` - MSVC RTTI vtable lookup.
 
 ## Changes to the FH2 code
 
-These are the only changes to existing FH2 files. FH2 behaviour is unchanged: the code path
-for title `1A96545B` is the same as in FH2 Extra Options 0.4.4.
+FH2 behaviour is unchanged: the code path for title `1A96545B` is the same as in FH2 Extra
+Options 0.4.4. Changes to existing FH2 files:
 
 - `adapters/azimuth.c`: accepts title `4CE1DFAB` and routes it to `fh3_initialize`.
 - `adapters/azimuth_save.c`, `adapters/azimuth_markers.c`, `adapters/azimuth_host.h`: save
   compatibility and marker repair take a title ID; FH2 keeps calling them with `1A96545B`.
 - `logging.c/.h`: `log_set_file` lets the FH3 profile write its own log.
 - `kernel32.def`: imports `GetPrivateProfileIntW`.
-- `build.py`: compiles `features/fh3.c` into Azimuth builds, and skips includes that are not
-  shipped (`features/fm5.h`) when scanning dependencies.
+- `build.py`: compiles the FH3 files and builds only the Azimuth `winmm.dll`.
+
+Removed from this repository because the Azimuth build does not use them: the Mezcal
+(`xg.dll`) adapter, the unfinished FM5 profile hooks, the unused Azimuth livery module, the
+example plugins and the FH2 modding tools (`mod_diff.py`, the addon JSON generator and the
+plugin/mod documentation). They remain available in the original FH2 repository. The FH2 mod
+loader, addons and plugin loader themselves are still part of the DLL.
 
 ## Credits and license
 
 - **Forza Horizon 2 Extra Options**: Arthur (RokkuDayo),
   <https://github.com/RokkuDayo/ForzaHorizon2_ExtraOptions>. All FH2 features, the DLL
-  architecture, the Azimuth and Mezcal adapters and the patch engine come from that project.
+  architecture, the Azimuth adapter and the patch engine come from that project.
 - **Forza Horizon 3 port**: alezwork, November 2026. This is a modified version of the original
-  work: the FH3 profile was added and the files listed above were changed.
+  work: the FH3 profile was added, the files listed above were changed and the unused files
+  listed above were removed.
 - The FH3 reverse engineering and code were done with the help of Claude (Anthropic), in the
   same spirit as the original project's AI usage disclosure.
 
@@ -149,4 +189,5 @@ Licensed under the GNU General Public License v3.0, the same as the original. Se
 [LICENSE](LICENSE).
 
 This project is not affiliated with Microsoft, Playground Games, Turn 10 Studios or the
-Azimuth authors. Forza Horizon is a trademark of Microsoft.
+Azimuth authors. Forza Horizon is a trademark of Microsoft. Groove and Xbox Music are
+trademarks of Microsoft.
