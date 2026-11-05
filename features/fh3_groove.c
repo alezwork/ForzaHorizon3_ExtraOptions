@@ -461,7 +461,16 @@ static HRESULT answer(const char *method, const char *path, unsigned char *resul
             append_text(line, at, LINE_ROOM, " -> unknown song");
             return finish(task, E_FAIL);
         }
-        put_wide(result, SONG_URL_CHARS, tracks[index].path);
+        put_wide(result, SONG_URL_CHARS - 16, tracks[index].path);
+        /* XboxMusicRadioStation (0x19a70f0) only plays URLs that contain
+           audio.mp3, audio.m4a, audio.mp4 or transcode/mp3, and audio.mp3
+           selects a separate MP3 path (0x1983da0). The marker routes every
+           file to the Media Foundation reader; open_reader removes it. */
+        wchar_t *url = (wchar_t *)result;
+        size_t end = wide_length(url);
+        static const wchar_t marker[] = L"|audio.m4a";
+        for (size_t i = 0; marker[i]; ++i) url[end++] = marker[i];
+        url[end] = 0;
         append_text(line, at, LINE_ROOM, " -> ");
         append_wide(line, at, LINE_ROOM, tracks[index].path);
         return finish(task, S_OK);
@@ -497,14 +506,337 @@ static HRESULT dispatch(const char *service, const char *method, void *request, 
     return hr;
 }
 
+/* Azimuth's MFCreateSourceReaderFromURL maps the game's Xbox paths (G:\ is
+   the game folder) and cannot open a Windows path such as D:\Music\a.mp3
+   (0x80070003). Songs from the music folder are therefore opened with the
+   host's own Media Foundation from System32; the reader it returns is an
+   ordinary IMFSourceReader, which SongStream only uses through COM. */
+typedef HRESULT(WINAPI *StartupFn)(ULONG, DWORD);
+typedef HRESULT(WINAPI *ComInitFn)(void *, DWORD);
+#define LOAD_FROM_SYSTEM32 0x00000800u
+#define MF_STARTUP_VERSION 0x00020070u
+#define COM_MULTITHREADED 0x0u
+
+typedef HRESULT(WINAPI *CreateTypeFn)(void **);
+typedef HRESULT(WINAPI *CreateBufferFn)(DWORD, void **);
+
+static ReaderFromUrl host_reader;
+static ComInitFn host_com_init;
+static CreateTypeFn host_create_type, host_create_sample;
+static CreateBufferFn host_create_buffer;
+static volatile LONG host_state; /* 0 = not tried, 1 = loading, 2 = ready, 3 = unavailable */
+static HRESULT host_startup = E_FAIL;
+
+static int host_media_foundation(void) {
+    if (InterlockedCompareExchange(&host_state, 1, 0) == 0) {
+        HMODULE plat = LoadLibraryExW(L"mfplat.dll", NULL, LOAD_FROM_SYSTEM32);
+        HMODULE readwrite = LoadLibraryExW(L"mfreadwrite.dll", NULL, LOAD_FROM_SYSTEM32);
+        HMODULE combase = LoadLibraryExW(L"combase.dll", NULL, LOAD_FROM_SYSTEM32);
+        StartupFn startup = plat ? (StartupFn)(uintptr_t)GetProcAddress(plat, "MFStartup") : NULL;
+        if (combase) host_com_init = (ComInitFn)(uintptr_t)GetProcAddress(combase, "CoInitializeEx");
+        if (host_com_init) host_com_init(NULL, COM_MULTITHREADED);
+        if (startup) host_startup = startup(MF_STARTUP_VERSION, 0);
+        if (plat) {
+            host_create_type = (CreateTypeFn)(uintptr_t)GetProcAddress(plat, "MFCreateMediaType");
+            host_create_sample = (CreateTypeFn)(uintptr_t)GetProcAddress(plat, "MFCreateSample");
+            host_create_buffer = (CreateBufferFn)(uintptr_t)GetProcAddress(plat, "MFCreateMemoryBuffer");
+        }
+        if (readwrite && host_startup >= 0 && host_create_sample && host_create_buffer) {
+            host_reader = (ReaderFromUrl)(uintptr_t)GetProcAddress(readwrite, "MFCreateSourceReaderFromURL");
+        }
+        InterlockedExchange(&host_state, host_reader ? 2 : 3);
+    }
+    while (host_state == 1) Sleep(1);
+    return host_state == 2;
+}
+
+/* The game asks the reader for 16-bit stereo PCM at the file's own rate
+   (0x196fb20), but builds that media type with Azimuth's MFPlat and ignores
+   a failed SetCurrentMediaType. Set the same format on the Windows reader
+   with Windows objects so the samples are always what SongStream expects. */
+static const GUID mt_major_type = {0x48eba18e, 0xf8c9, 0x4687, {0xbf, 0x11, 0x0a, 0x74, 0xc9, 0xf9, 0x6a, 0x8f}};
+static const GUID mt_subtype = {0xf7e34c9a, 0x42e8, 0x4714, {0xb7, 0x4b, 0xcb, 0x29, 0xd7, 0x2c, 0x35, 0xe5}};
+static const GUID media_audio = {0x73647561, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
+static const GUID audio_pcm = {0x00000001, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
+static const GUID mt_channels = {0x37e48bf5, 0x645e, 0x4c5b, {0x89, 0xde, 0xad, 0xa9, 0xe2, 0x9b, 0x69, 0x6a}};
+static const GUID mt_rate = {0x5faeeae7, 0x0290, 0x4c31, {0x9e, 0x8a, 0xc5, 0x34, 0xf6, 0x8d, 0x9d, 0xba}};
+static const GUID mt_block = {0x322de230, 0x9eeb, 0x43bd, {0xab, 0x7a, 0xff, 0x41, 0x22, 0x51, 0x54, 0x1d}};
+static const GUID mt_bytes = {0x1aab75c8, 0xcfef, 0x451c, {0xab, 0x95, 0xac, 0x03, 0x4b, 0x8e, 0x17, 0x31}};
+static const GUID mt_bits = {0xf2deb57f, 0x40fa, 0x4764, {0xaa, 0x33, 0xed, 0x4f, 0x2d, 0x1f, 0xf6, 0x69}};
+static const GUID mt_independent = {0xc9173739, 0x5e56, 0x461c, {0xb7, 0x13, 0x46, 0xfb, 0x99, 0x5c, 0xb9, 0x5f}};
+
+/* IMFSourceReader: 5 GetNativeMediaType, 7 SetCurrentMediaType.
+   IMFAttributes: 2 Release, 7 GetUINT32, 21 SetUINT32, 24 SetGUID. */
+typedef HRESULT(STDMETHODCALLTYPE *NativeTypeFn)(void *, DWORD, DWORD, void **);
+typedef HRESULT(STDMETHODCALLTYPE *SetTypeFn)(void *, DWORD, DWORD *, void *);
+typedef ULONG(STDMETHODCALLTYPE *ReleaseFn)(void *);
+typedef HRESULT(STDMETHODCALLTYPE *GetU32Fn)(void *, const GUID *, UINT32 *);
+typedef HRESULT(STDMETHODCALLTYPE *SetU32Fn)(void *, const GUID *, UINT32);
+typedef HRESULT(STDMETHODCALLTYPE *SetGuidFn)(void *, const GUID *, const GUID *);
+
+static void **com_methods(void *object) { return *(void ***)object; }
+
+static HRESULT set_pcm_output(void *reader, UINT32 *rate_out) {
+    UINT32 rate = 44100;
+    void *native = NULL, *type = NULL;
+    if (((NativeTypeFn)com_methods(reader)[5])(reader, 0, 0, &native) >= 0 && native) {
+        UINT32 native_rate = 0;
+        if (((GetU32Fn)com_methods(native)[7])(native, &mt_rate, &native_rate) >= 0 && native_rate)
+            rate = native_rate;
+        ((ReleaseFn)com_methods(native)[2])(native);
+    }
+    *rate_out = rate;
+    if (!host_create_type) return E_NOINTERFACE;
+    HRESULT hr = host_create_type(&type);
+    if (hr < 0 || !type) return hr < 0 ? hr : E_FAIL;
+    void **m = com_methods(type);
+    ((SetGuidFn)m[24])(type, &mt_major_type, &media_audio);
+    ((SetGuidFn)m[24])(type, &mt_subtype, &audio_pcm);
+    ((SetU32Fn)m[21])(type, &mt_channels, 2);
+    ((SetU32Fn)m[21])(type, &mt_rate, rate);
+    ((SetU32Fn)m[21])(type, &mt_bits, 16);
+    ((SetU32Fn)m[21])(type, &mt_block, 4);
+    ((SetU32Fn)m[21])(type, &mt_bytes, rate * 4);
+    ((SetU32Fn)m[21])(type, &mt_independent, 1);
+    hr = ((SetTypeFn)com_methods(reader)[7])(reader, 0, NULL, type);
+    ((ReleaseFn)m[2])(type);
+    return hr;
+}
+
+/* ---- fixed-size samples ----------------------------------------------------
+   The FMOD read callback (0x198a520) pops one decoded sample per copy and
+   drops whatever does not fit the 16384 bytes FMOD asked for (4096 frames,
+   decodebuffersize at 0x198ff7c). Groove's AAC frames were 1024 frames =
+   4096 bytes, so nothing was lost; Windows' MP3 decoder returns 1152 frames,
+   which lost an eighth of every buffer and made songs sound fast-forwarded.
+   The Windows reader is wrapped so ReadSample always returns 4096 bytes. */
+#define CHUNK_BYTES 0x1000u
+#define READER_FLAG_ERROR 0x1u
+#define READER_FLAG_END_OF_STREAM 0x2u
+
+typedef struct {
+    void **vtable;
+    volatile LONG references;
+    void *inner;
+    unsigned char *pending;
+    DWORD capacity, size, offset;
+    int ended;
+    LONGLONG time;
+} ChunkReader;
+
+static const GUID iid_unknown_reader = {0, 0, 0, {0xc0, 0, 0, 0, 0, 0, 0, 0x46}};
+static const GUID iid_source_reader = {0x70ae66f2, 0xc809, 0x4e4f, {0x89, 0x15, 0xbd, 0xcb, 0x40, 0x6b, 0x79, 0x93}};
+
+typedef HRESULT(STDMETHODCALLTYPE *ReadSampleFn)(void *, DWORD, DWORD, DWORD *, DWORD *, LONGLONG *, void **);
+typedef HRESULT(STDMETHODCALLTYPE *ContiguousFn)(void *, void **);
+typedef HRESULT(STDMETHODCALLTYPE *LockFn)(void *, BYTE **, DWORD *, DWORD *);
+typedef HRESULT(STDMETHODCALLTYPE *UnlockFn)(void *);
+typedef HRESULT(STDMETHODCALLTYPE *SetLengthFn)(void *, DWORD);
+typedef HRESULT(STDMETHODCALLTYPE *AddBufferFn)(void *, void *);
+typedef HRESULT(STDMETHODCALLTYPE *SetTimeFn)(void *, LONGLONG);
+
+static void **inner_methods(ChunkReader *self) { return *(void ***)self->inner; }
+
+static HRESULT STDMETHODCALLTYPE chunk_query(ChunkReader *self, const GUID *iid, void **out) {
+    if (memory_equal(iid, &iid_unknown_reader, sizeof(GUID)) || memory_equal(iid, &iid_source_reader, sizeof(GUID))) {
+        InterlockedIncrement(&self->references);
+        *out = self;
+        return S_OK;
+    }
+    *out = NULL;
+    return E_NOINTERFACE;
+}
+static ULONG STDMETHODCALLTYPE chunk_add(ChunkReader *self) { return (ULONG)InterlockedIncrement(&self->references); }
+static ULONG STDMETHODCALLTYPE chunk_release(ChunkReader *self) {
+    LONG left = InterlockedDecrement(&self->references);
+    if (!left) {
+        ((ReleaseFn)inner_methods(self)[2])(self->inner);
+        if (self->pending) HeapFree(GetProcessHeap(), 0, self->pending);
+        HeapFree(GetProcessHeap(), 0, self);
+    }
+    return (ULONG)left;
+}
+
+/* Append one decoded sample of the Windows reader to the pending bytes. */
+static HRESULT chunk_fill(ChunkReader *self, DWORD stream) {
+    DWORD index = 0, flags = 0;
+    LONGLONG time = 0;
+    void *sample = NULL;
+    HRESULT hr = ((ReadSampleFn)inner_methods(self)[9])(self->inner, stream, 0, &index, &flags, &time, &sample);
+    if (hr < 0 || (flags & (READER_FLAG_ERROR | READER_FLAG_END_OF_STREAM))) self->ended = 1;
+    if (!sample) return hr;
+    void *buffer = NULL;
+    BYTE *data = NULL;
+    DWORD max = 0, length = 0;
+    if (((ContiguousFn)com_methods(sample)[41])(sample, &buffer) >= 0 && buffer) {
+        if (((LockFn)com_methods(buffer)[3])(buffer, &data, &max, &length) >= 0 && data) {
+            if (self->offset) {
+                /* Move the unread tail to the front before growing. */
+                DWORD tail = self->size - self->offset;
+                /* Forward copy to a lower address: safe for the overlap. */
+                memory_copy(self->pending, self->pending + self->offset, tail);
+                self->size = tail;
+                self->offset = 0;
+            }
+            if (self->size + length > self->capacity) {
+                DWORD capacity = self->size + length + CHUNK_BYTES;
+                unsigned char *grown = HeapAlloc(GetProcessHeap(), 0, capacity);
+                if (grown) {
+                    if (self->pending) {
+                        memory_copy(grown, self->pending, self->size);
+                        HeapFree(GetProcessHeap(), 0, self->pending);
+                    }
+                    self->pending = grown;
+                    self->capacity = capacity;
+                }
+            }
+            if (self->size + length <= self->capacity) {
+                memory_copy(self->pending + self->size, data, length);
+                self->size += length;
+            }
+            ((UnlockFn)com_methods(buffer)[4])(buffer);
+        }
+        ((ReleaseFn)com_methods(buffer)[2])(buffer);
+    }
+    ((ReleaseFn)com_methods(sample)[2])(sample);
+    return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE chunk_read(ChunkReader *self, DWORD stream, DWORD control, DWORD *actual,
+                                            DWORD *flags, LONGLONG *timestamp, void **out) {
+    (void)control;
+    if (actual) *actual = 0;
+    if (flags) *flags = 0;
+    if (timestamp) *timestamp = self->time;
+    if (out) *out = NULL;
+    while (!self->ended && self->size - self->offset < CHUNK_BYTES) {
+        if (chunk_fill(self, stream) < 0) break;
+    }
+    DWORD available = self->size - self->offset;
+    if (!available) {
+        if (flags) *flags = READER_FLAG_END_OF_STREAM;
+        return S_OK;
+    }
+    void *buffer = NULL, *sample = NULL;
+    BYTE *data = NULL;
+    DWORD max = 0, length = 0;
+    HRESULT hr = host_create_buffer(CHUNK_BYTES, &buffer);
+    if (hr < 0 || !buffer) return hr < 0 ? hr : E_OUTOFMEMORY;
+    hr = ((LockFn)com_methods(buffer)[3])(buffer, &data, &max, &length);
+    if (hr >= 0 && data) {
+        DWORD copy = available < CHUNK_BYTES ? available : CHUNK_BYTES;
+        memory_copy(data, self->pending + self->offset, copy);
+        /* The last chunk of a song is padded with silence. */
+        volatile BYTE *silence = data;
+        for (DWORD i = copy; i < CHUNK_BYTES; ++i) silence[i] = 0;
+        self->offset += copy;
+        ((UnlockFn)com_methods(buffer)[4])(buffer);
+        ((SetLengthFn)com_methods(buffer)[6])(buffer, CHUNK_BYTES);
+        hr = host_create_sample(&sample);
+        if (hr >= 0 && sample) {
+            ((AddBufferFn)com_methods(sample)[42])(sample, buffer);
+            ((SetTimeFn)com_methods(sample)[36])(sample, self->time);
+            /* 1024 frames at 44.1 kHz, in 100 ns units. */
+            self->time += 232199;
+        }
+    }
+    ((ReleaseFn)com_methods(buffer)[2])(buffer);
+    if (out) *out = sample;
+    else if (sample) ((ReleaseFn)com_methods(sample)[2])(sample);
+    return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE chunk_position(ChunkReader *self, const GUID *format, const void *position) {
+    self->size = self->offset = 0;
+    self->ended = 0;
+    return ((HRESULT(STDMETHODCALLTYPE *)(void *, const GUID *, const void *))inner_methods(self)[8])(
+        self->inner, format, position);
+}
+static HRESULT STDMETHODCALLTYPE chunk_flush(ChunkReader *self, DWORD stream) {
+    self->size = self->offset = 0;
+    return ((HRESULT(STDMETHODCALLTYPE *)(void *, DWORD))inner_methods(self)[10])(self->inner, stream);
+}
+#define CHUNK_FORWARD2(name, slot, t1, t2) \
+    static HRESULT STDMETHODCALLTYPE name(ChunkReader *self, t1 a, t2 b) { \
+        return ((HRESULT(STDMETHODCALLTYPE *)(void *, t1, t2))inner_methods(self)[slot])(self->inner, a, b); }
+#define CHUNK_FORWARD3(name, slot, t1, t2, t3) \
+    static HRESULT STDMETHODCALLTYPE name(ChunkReader *self, t1 a, t2 b, t3 c) { \
+        return ((HRESULT(STDMETHODCALLTYPE *)(void *, t1, t2, t3))inner_methods(self)[slot])(self->inner, a, b, c); }
+#define CHUNK_FORWARD4(name, slot, t1, t2, t3, t4) \
+    static HRESULT STDMETHODCALLTYPE name(ChunkReader *self, t1 a, t2 b, t3 c, t4 d) { \
+        return ((HRESULT(STDMETHODCALLTYPE *)(void *, t1, t2, t3, t4))inner_methods(self)[slot])(self->inner, a, b, c, d); }
+CHUNK_FORWARD2(chunk_get_selection, 3, DWORD, BOOL *)
+CHUNK_FORWARD2(chunk_set_selection, 4, DWORD, BOOL)
+CHUNK_FORWARD3(chunk_native_type, 5, DWORD, DWORD, void **)
+CHUNK_FORWARD2(chunk_current_type, 6, DWORD, void **)
+CHUNK_FORWARD3(chunk_set_type, 7, DWORD, DWORD *, void *)
+CHUNK_FORWARD4(chunk_service, 11, DWORD, const GUID *, const GUID *, void **)
+CHUNK_FORWARD3(chunk_attribute, 12, DWORD, const GUID *, void *)
+
+static void *chunk_methods[] = {
+    (void *)chunk_query,     (void *)chunk_add,         (void *)chunk_release,      (void *)chunk_get_selection,
+    (void *)chunk_set_selection, (void *)chunk_native_type, (void *)chunk_current_type, (void *)chunk_set_type,
+    (void *)chunk_position,  (void *)chunk_read,        (void *)chunk_flush,        (void *)chunk_service,
+    (void *)chunk_attribute};
+
+/* Wrap a Windows source reader; on failure the reader is kept as it is. */
+static void *chunk_wrap(void *inner) {
+    ChunkReader *self = HeapAlloc(GetProcessHeap(), 0, sizeof(ChunkReader));
+    if (!self) return inner;
+    self->vtable = chunk_methods;
+    self->references = 1;
+    self->inner = inner;
+    self->pending = NULL;
+    self->capacity = self->size = self->offset = 0;
+    self->ended = 0;
+    self->time = 0;
+    return self;
+}
+
 static HRESULT open_reader(const wchar_t *url, void *attributes, void **reader) {
     char line[LINE_SIZE];
     size_t at = 0;
-    HRESULT hr = ((ReaderFromUrl)(game + FH3_GROOVE_MF_READER_RVA))(url, attributes, reader);
-    append_text(line, &at, LINE_ROOM, "GROOVE: MFCreateSourceReaderFromURL ");
-    append_wide(line, &at, LINE_ROOM - 40, url);
+    /* Drop the "|audio.m4a" marker added by GetSongURL: the rest is a file path. */
+    wchar_t path[SONG_URL_CHARS];
+    size_t length = 0;
+    while (url && url[length] && url[length] != '|' && length + 1 < ARRAY_COUNT(path)) {
+        path[length] = url[length];
+        ++length;
+    }
+    path[length] = 0;
+    int local = url && url[length] == '|';
+    HRESULT hr, format = S_FALSE;
+    UINT32 rate = 0;
+    const char *via = "game";
+    if (local && host_media_foundation()) {
+        /* The reader thread may not have joined COM yet. */
+        if (host_com_init) host_com_init(NULL, COM_MULTITHREADED);
+        hr = host_reader(path, attributes, reader);
+        via = "windows";
+        if (hr >= 0 && reader && *reader) {
+            format = set_pcm_output(*reader, &rate);
+            *reader = chunk_wrap(*reader);
+        }
+    } else {
+        hr = ((ReaderFromUrl)(game + FH3_GROOVE_MF_READER_RVA))(local ? path : url, attributes, reader);
+    }
+    append_text(line, &at, LINE_ROOM, "GROOVE: MFCreateSourceReaderFromURL (");
+    append_text(line, &at, LINE_ROOM, via);
+    append_text(line, &at, LINE_ROOM, ") ");
+    append_wide(line, &at, LINE_ROOM - 60, local ? path : url);
     append_text(line, &at, LINE_ROOM, " -> hr=0x");
     append_hex(line, &at, (uint32_t)hr, 8);
+    if (format != S_FALSE) {
+        append_text(line, &at, LINE_ROOM, ", PCM 16-bit stereo ");
+        append_number(line, &at, LINE_ROOM, rate);
+        append_text(line, &at, LINE_ROOM, " Hz hr=0x");
+        append_hex(line, &at, (uint32_t)format, 8);
+    }
+    if (local && host_state == 3) {
+        append_text(line, &at, LINE_ROOM, " (Windows Media Foundation unavailable, MFStartup 0x");
+        append_hex(line, &at, (uint32_t)host_startup, 8);
+        append_text(line, &at, LINE_ROOM, ")");
+    }
     log_line(line, at);
     return hr;
 }

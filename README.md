@@ -29,7 +29,7 @@ profile takes over with its own settings file and log. FH2 code is never entered
 | `[Graphics] BlurRimThreshold` | Wheel speed at which the 3D rim is swapped for the flat blurred rim | 2 | Yes |
 | `[HUD] MinimapFollowsCamera` | A rotating minimap turns with the camera instead of the car (FH2 feature) | 3 | Yes |
 | `[Vehicle] HeadlightToggle` | Headlights on/off on every car with a controller button, left stick by default (FH2 feature) | 1 | Yes |
-| `[Radio] LocalMusicRadio` | Brings back the Groove (Xbox Music) radio station, playing your own music files | 18 | Partly |
+| `[Radio] LocalMusicRadio` | Brings back the Groove (Xbox Music) radio station, playing your own music files | 19 | Yes |
 | `[Compatibility] DisableAzimuthSaveChecksums` | Same as FH2: bypass Azimuth's save size/hash rejection (off by default) | - | - |
 
 Notes:
@@ -63,15 +63,21 @@ Notes:
   - playlists and songs come from the music folder: `FH3_Music` next to the INI, or the
     `MusicFolder` setting. Every top-level subfolder is a playlist, plus "All music";
   - every song plays straight from its file through Windows Media Foundation (mp3, m4a, aac,
-    wma, wav, flac);
+    wma, wav, flac). Azimuth's own `MFCreateSourceReaderFromURL` only knows the game's Xbox
+    paths, so music files are opened with the Windows one from System32;
+  - the station only accepts Groove stream URLs, so each song URL carries an `|audio.m4a`
+    marker that is removed before the file is opened;
+  - the game's FMOD callback copies one decoded block per read and drops what does not fit,
+    which suited Groove's 1024-frame AAC blocks. Windows' MP3 decoder returns 1152 frames, so
+    the mod hands the game 4096-byte (1024-frame) blocks; otherwise songs sound
+    fast-forwarded;
   - a file named `Artist - Title.mp3` shows its artist and title, otherwise the folder name
     is shown as the artist.
 
   Turn the station on in **Settings > Audio** and pick a playlist there. The game itself
   unlocks the "Xbox Music" station during the story, with its Groove introduction popup;
   after that it appears in the radio list. Songs added while the game runs are found after a
-  restart. `GrooveLog=1` writes the station's requests and state to the log. The settings
-  page, playlists and subscription are tested; playback is not yet.
+  restart. `GrooveLog=1` writes the station's requests and state to the log.
 
 Everything else from FH2 Extra Options (garage from pause, autodrive, drift camera, FOV,
 video menu, rims, mod loader and so on) is **not** ported to FH3. FH3 already lets you change
@@ -97,7 +103,7 @@ Any other executable is refused and nothing is patched.
 5. Put your music into `FH3_Music`.
 6. Start Forza Horizon 3 through Azimuth.
 
-`FH3_ExtraOptions.log` appears next to the DLL. A successful start lists 45
+`FH3_ExtraOptions.log` appears next to the DLL. A successful start lists 46
 `FH3: patched ...` lines and `OK: requested FH3 tweaks applied in memory.`
 
 If you turn `UnlockDLC` off after using DLC cars, those cars may stay in or vanish from your
@@ -136,7 +142,7 @@ The full patch table, with the reasoning for every site, lives in
 | Blur rims | `0x1e37b6d` (threshold load), `0x1e37c8c` (threshold value in padding) |
 | Headlights | `ForzaCar` vtable slot 16 `0x42e06d0` (per-car update) |
 | Minimap | call `0x120b3d2` (tracking minimap update), thunk `0x2603260` |
-| Radio | 9 XboxMusic service calls `0x27b84c8`...`0x27b99c0`, song reader `0x1991dab`, player update jumps `0x1731b26`/`0x1731b39`; thunks `0x2700580`, `0x270bb80`, `0x260c610` |
+| Radio | 9 XboxMusic service calls `0x27b84c8`...`0x27b99c0`, song reader `0x1991dab` and its format setup `0x1991dbf`, player update jumps `0x1731b26`/`0x1731b39`; thunks `0x2700580`, `0x270bb80`, `0x260c610` |
 
 ## Building
 

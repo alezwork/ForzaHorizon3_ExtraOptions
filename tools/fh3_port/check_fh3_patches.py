@@ -27,6 +27,11 @@ def parse(text):
 
 
 image = Image(FH3)
+
+
+def callers_of(target):
+    return [c for c in image.refs_to(target) if image.read(c, 1) in (b"\xe8", b"\xe9")]
+
 md = Cs(CS_ARCH_X86, CS_MODE_64)
 ok = bool(rows)
 for rva, size, group, name, orig, new in rows:
@@ -60,6 +65,13 @@ for rva, size, group, name, orig, new in rows:
         g = {k: int(v, 16) for k, v in re.findall(r"#define (\w+) (0x[0-9a-f]+)u", groove)}
         patched = next(md.disasm(new, rva))
         target = int(first.op_str, 16)
+        if target == 0x196fb20:
+            # SongStream's media type setup, replaced by "mov al, 1" (result unused).
+            good &= (first.mnemonic == "call" and new == bytes.fromhex("b001909090")
+                     and image.read(rva + 5, 3) == bytes.fromhex("0fb6c0") and callers_of(target) == [rva])
+            print("%-36s %08x %-4s %s" % (name, rva, "OK" if good else "FAIL", "call %s -> mov al, 1" % first.op_str))
+            ok &= good
+            continue
         routes = {g["FH3_GROOVE_MF_READER_RVA"]: ("call", g["FH3_GROOVE_MF_THUNK_RVA"]),
                   g["FH3_GROOVE_DISPATCHER_RVA"]: ("call", g["FH3_GROOVE_DISPATCHER_THUNK_RVA"]),
                   g["FH3_GROOVE_PLAYER_UPDATE_RVA"]: ("jmp", g["FH3_GROOVE_PLAYER_THUNK_RVA"])}
@@ -196,6 +208,15 @@ checks += [
     ("groove: song URL result at SongStream +0x1b0",
      rtti_name(0x4634c78) == ".?AVSongStream@XboxMusic@@" and qword(0x4634c78) - base == 0x1946d80
      and has(0x1946d93, "488d91b0010000")),
+    ("groove: station URL filter accepts audio.m4a, which uses the MF reader",
+     image.read(rip_target(0x19a7116, 7), 20) == "audio.m4a\0".encode("utf-16le")
+     and image.read(rip_target(0x1983db2, 7), 20) == "audio.mp3\0".encode("utf-16le")
+     and has(0x198c224, "e8c7ae0100") and has(0x196fd6a, "e831400100")
+     and rip_target(0x196fea4, 7) == 0x1991d20 and has(0x1991dab, "e8d6090200")),
+    ("groove: FMOD stream is PCM16 stereo 44.1 kHz, 4096-frame reads by 0x198a520",
+     has(0x198ff56, "c744243c02000000") and has(0x198ff64, "c7442440" + (44100).to_bytes(4, "little").hex())
+     and has(0x198ff6c, "c744244402000000") and has(0x198ff7c, "c744244800100000")
+     and rip_target(0x198ff3b, 7) == 0x198a520 and gc["CHUNK_BYTES"] == 4096),
     ("groove: task status, close and pump",
      has(0x17870ca, "488b03488bcb4883c4205b48ff6010") and has(0x178703a, "488b03")
      and has(0x1787047, "ff5020") and has(0x1787057, "ff5008") and has(0x17bc7a8, "e8c3a8fcff894718")
