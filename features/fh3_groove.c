@@ -552,8 +552,8 @@ static int host_media_foundation(void) {
 
 /* The game asks the reader for 16-bit stereo PCM at the file's own rate
    (0x196fb20), but builds that media type with Azimuth's MFPlat and ignores
-   a failed SetCurrentMediaType. Set the same format on the Windows reader
-   with Windows objects so the samples are always what SongStream expects. */
+   a failed SetCurrentMediaType. The DLL sets 16-bit stereo PCM at 44.1 kHz,
+   the FMOD stream's rate, with Windows objects instead. */
 static const GUID mt_major_type = {0x48eba18e, 0xf8c9, 0x4687, {0xbf, 0x11, 0x0a, 0x74, 0xc9, 0xf9, 0x6a, 0x8f}};
 static const GUID mt_subtype = {0xf7e34c9a, 0x42e8, 0x4714, {0xb7, 0x4b, 0xcb, 0x29, 0xd7, 0x2c, 0x35, 0xe5}};
 static const GUID media_audio = {0x73647561, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
@@ -576,16 +576,10 @@ typedef HRESULT(STDMETHODCALLTYPE *SetGuidFn)(void *, const GUID *, const GUID *
 
 static void **com_methods(void *object) { return *(void ***)object; }
 
-static HRESULT set_pcm_output(void *reader, UINT32 *rate_out) {
-    UINT32 rate = 44100;
-    void *native = NULL, *type = NULL;
-    if (((NativeTypeFn)com_methods(reader)[5])(reader, 0, 0, &native) >= 0 && native) {
-        UINT32 native_rate = 0;
-        if (((GetU32Fn)com_methods(native)[7])(native, &mt_rate, &native_rate) >= 0 && native_rate)
-            rate = native_rate;
-        ((ReleaseFn)com_methods(native)[2])(native);
-    }
-    *rate_out = rate;
+#define STREAM_RATE 0xac44u /* the FMOD stream's fixed rate (0x198ff64) */
+
+static HRESULT request_pcm(void *reader, UINT32 rate) {
+    void *type = NULL;
     if (!host_create_type) return E_NOINTERFACE;
     HRESULT hr = host_create_type(&type);
     if (hr < 0 || !type) return hr < 0 ? hr : E_FAIL;
@@ -600,6 +594,25 @@ static HRESULT set_pcm_output(void *reader, UINT32 *rate_out) {
     ((SetU32Fn)m[21])(type, &mt_independent, 1);
     hr = ((SetTypeFn)com_methods(reader)[7])(reader, 0, NULL, type);
     ((ReleaseFn)m[2])(type);
+    return hr;
+}
+
+/* The FMOD stream plays at 44.1 kHz whatever the song's rate, so a 48 kHz
+   file given at its own rate plays about 8% slow. Ask the Windows reader to
+   resample to 44.1 kHz; only if it refuses, keep the file's own rate. */
+static HRESULT set_pcm_output(void *reader, UINT32 *rate_out) {
+    UINT32 native_rate = 0;
+    void *native = NULL;
+    if (((NativeTypeFn)com_methods(reader)[5])(reader, 0, 0, &native) >= 0 && native) {
+        ((GetU32Fn)com_methods(native)[7])(native, &mt_rate, &native_rate);
+        ((ReleaseFn)com_methods(native)[2])(native);
+    }
+    *rate_out = STREAM_RATE;
+    HRESULT hr = request_pcm(reader, STREAM_RATE);
+    if (hr < 0 && native_rate && native_rate != STREAM_RATE) {
+        *rate_out = native_rate;
+        hr = request_pcm(reader, native_rate);
+    }
     return hr;
 }
 

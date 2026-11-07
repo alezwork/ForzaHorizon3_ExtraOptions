@@ -216,7 +216,8 @@ checks += [
     ("groove: FMOD stream is PCM16 stereo 44.1 kHz, 4096-frame reads by 0x198a520",
      has(0x198ff56, "c744243c02000000") and has(0x198ff64, "c7442440" + (44100).to_bytes(4, "little").hex())
      and has(0x198ff6c, "c744244402000000") and has(0x198ff7c, "c744244800100000")
-     and rip_target(0x198ff3b, 7) == 0x198a520 and gc["CHUNK_BYTES"] == 4096),
+     and rip_target(0x198ff3b, 7) == 0x198a520 and gc["CHUNK_BYTES"] == 4096
+     and gc["STREAM_RATE"] == 44100),
     ("groove: task status, close and pump",
      has(0x17870ca, "488b03488bcb4883c4205b48ff6010") and has(0x178703a, "488b03")
      and has(0x1787047, "ff5020") and has(0x1787057, "ff5008") and has(0x17bc7a8, "e8c3a8fcff894718")
